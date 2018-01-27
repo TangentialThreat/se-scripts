@@ -1,0 +1,348 @@
+//O.I.S. Laser Rangefinder 
+//http://steamcommunity.com/sharedfiles/filedetails/?id=820255140 
+//Customization Options 
+//nerfed to be full manual by hd142
+string cameraName = "[Lidar]"; 
+string laserStatusLCDName = "[Lidar]"; 
+string gpsLCDName = "[Lidar GPS]"; 
+bool writeGPSToLCD = true; 
+bool saveGPS = true; 
+ 
+/* 
+update 1.185.100 added argument parser 
+update 1.185.014 api changes. removed timer requirement 
+update 1.182.103 change to WriteLCD class   
+update 1.166.11 changed to output gps in gps format 
+update 1.166.11 fixed bugs, added storage 
+update 1.166.07 added GPS storage feature 
+update 1.166.07 added Lidar Range Finder 
+ 
+ 
+Name Convention  
+zones are defined by [name] 
+Guide http://steamcommunity.com/sharedfiles/manageguide/?id=757765029 
+*/ 
+ 
+// *** User Customization *** 
+List<string> reservedNamesStatic = new List<string> { "[LCD]", "[ShipStatus]", "[EmergencyThrust]", "[SunChaser]", "[GravDrive]", "[OrbitThruster]", "" };//Names that are [name] but not airzones  
+MyDetectedEntityInfo info = new MyDetectedEntityInfo(); 
+WriteLCD laserStatusLCD; 
+WriteLCD gpsLCD; 
+List<IMyCameraBlock> cameras = new List<IMyCameraBlock>(); 
+List<String> gpsCoordinates = new List<String>(); 
+List<MyDetectedEntityInfo> scannedItems = new List<MyDetectedEntityInfo>(); 
+//Helpers 
+string[] argMessages = new string[10]; 
+string[] pieces = new string[2]; 
+int tempint = 0; 
+ 
+public Program() { 
+    // The constructor, called only once every session and 
+    // always before any other method is called. Use it to 
+    // initialize your script.  
+    //      
+    // The constructor is optional and can be removed if not 
+    // needed. 
+    ArgumentParser(Me.CustomData); 
+    laserStatusLCD = new WriteLCD(this, laserStatusLCDName); 
+    gpsLCD = new WriteLCD(this, gpsLCDName); 
+    if (Storage.Length > 0) { 
+        var parts = Storage.Split(';'); 
+        for (int i = 0; i < parts.Length; ++i) { 
+            gpsCoordinates.Add(parts[i]); 
+        } 
+    } 
+    BuildLists();
+	//set to full manual by hd142
+    //Runtime.UpdateFrequency = UpdateFrequency.Update100; 
+    //do a first pass 
+    //empty old lists just in case 
+} 
+ 
+public void Save() { 
+    // Called when the program needs to save its state. Use 
+    // this method to save your state to the Storage field 
+    // or some other means.  
+    //  
+    // This method is optional and can be removed if not 
+    // needed. 
+    Storage = ""; 
+    for (int i = 0; i < gpsCoordinates.Count; ++i) { 
+        if (Storage.Length > 0) Storage += ";"; 
+        Storage += gpsCoordinates[i]; 
+    } 
+} 
+ 
+public void Main(string argument, UpdateType updateSource) { 
+ 
+    //Initilization of variables 
+    // Arguments = "", lase, turnon, turnoff, cleangps, rebuild and  
+ 
+    //null checker 
+    for (int i = 0; i < cameras.Count; ++i) { 
+        if (!cameras[i].IsFunctional) { 
+            BuildLists(); 
+            break; 
+        } 
+    } 
+    if (argument.Length > 0) { 
+        ArgumentParser(argument); 
+    } 
+ 
+	//set to full manual by hd142
+    //if (!((updateSource & UpdateType.Update100) != 0)) { return; } 
+    //in update100 
+    //Clean LCDs off  
+    if (!laserStatusLCD.CleanLCD()) laserStatusLCD.LCDBuild(laserStatusLCDName); 
+    if (!gpsLCD.CleanLCD()) gpsLCD.LCDBuild(gpsLCDName); 
+ 
+    //WriteToLCD(Storage); 
+    //Actions  
+    laserStatusLCD.WriteToLCD("   O.I.S. Lidar RangeFinder"); 
+    laserStatusLCD.WriteToLCD($"\n Camera: {cameraName}"); 
+    if (cameras.Count == 0) laserStatusLCD.WriteToLCD("\n No Camera found"); 
+    else { laserStatusLCD.WriteToLCD($"\n Laser Range: {cameras[0].AvailableScanRange} m"); } 
+    if (info.IsEmpty()) { 
+        laserStatusLCD.WriteToLCD("\n No Objects Found"); 
+    } else { 
+        laserStatusLCD.WriteToLCD($"\n Name: {info.Name}"); 
+        laserStatusLCD.WriteToLCD($"\n Relationship: {info.Relationship}"); 
+        if (info.HitPosition.HasValue && cameras.Count > 0) { 
+            var distance = Vector3D.Distance(cameras[0].GetPosition(), 
+                info.HitPosition.Value); 
+            laserStatusLCD.WriteToLCD($"\n Distance: {distance.ToString("0.00")} m"); 
+            var speed = VelocityEta(FindVelocity(), info.HitPosition.Value); 
+            laserStatusLCD.WriteToLCD($"\n ETA: {(distance / speed).ToString("0.00")} s"); 
+        } 
+        laserStatusLCD.WriteToLCD($"\n Position: \n{info.Position.ToString("0.000")}"); 
+        laserStatusLCD.WriteToLCD($"\n Velocity: {info.Velocity.ToString("0.000")}"); 
+        laserStatusLCD.WriteToLCD($"\n Type: {info.Type}"); 
+        if (!saveGPS) { 
+            gpsLCD.WriteToLCD($" GPS:{info.Name}:{info.Position.X.ToString("0.00")}:{info.Position.Y.ToString("0.00")}:{info.Position.Z.ToString("0.00")}:\n"); 
+        } 
+        if (saveGPS) { 
+            for (int i = 0; i < gpsCoordinates.Count; ++i) { 
+                gpsLCD.WriteToLCD($" {gpsCoordinates[i]}\n"); 
+            } 
+        } 
+    } 
+    laserStatusLCD.WriteToLCD("\n"); 
+    if (!laserStatusLCD.FlushToLCD()) laserStatusLCD.LCDBuild(laserStatusLCDName); 
+    if (writeGPSToLCD) { 
+        if (!gpsLCD.FlushToLCD()) gpsLCD.LCDBuild(gpsLCDName); 
+    } 
+}//main 
+ 
+void ArgumentParser(string argument) { 
+    argMessages = argument.Split('\n'); 
+    foreach (string de in argMessages) { 
+        pieces = de.Split(' '); 
+        if (pieces.Count() < 1) continue; 
+        if (pieces[0] == "lase") { 
+            //fire rangefinder 
+            MyDetectedEntityInfo tempInfo = new MyDetectedEntityInfo(); 
+            for (int i = 0; i < cameras.Count; ++i) { 
+                if (cameras[i].EnableRaycast) { 
+                    tempInfo = cameras[i].Raycast(cameras[i].AvailableScanRange, 0, 0); 
+                    if (!tempInfo.IsEmpty() && !tempInfo.EntityId.Equals(Me.EntityId)) { 
+                        info = tempInfo; 
+                    } 
+                } 
+            } 
+            if (saveGPS) { 
+                gpsCoordinates.Add($"GPS:{info.Name}:{info.Position.X.ToString("0.00")}:{info.Position.Y.ToString("0.00")}:{info.Position.Z.ToString("0.00")}:"); 
+                scannedItems.Add(info); 
+            } 
+            //return; 
+        } 
+        if (pieces[0] == "turnon") { 
+            for (int i = 0; i < cameras.Count; ++i) cameras[i].EnableRaycast = true; 
+            //return; 
+        } 
+        if (pieces[0] == "turnoff") { 
+            for (int i = 0; i < cameras.Count; ++i) cameras[i].EnableRaycast = false; 
+            //return; 
+        } 
+        if (pieces[0] == "cleangps") { 
+            gpsLCD.CleanLCD(); 
+            gpsCoordinates.Clear(); 
+            scannedItems.Clear(); 
+            //return; 
+        } 
+        if (pieces[0] == "rebuild") { 
+            BuildLists(); 
+            //return; 
+        } 
+        if (pieces[0] == "writeGPSon") { 
+            writeGPSToLCD = true; 
+        } 
+        if (pieces[0] == "writeGPSoff") { 
+            writeGPSToLCD = false; 
+        } 
+        if (pieces[0] == "saveGPSon") { 
+            saveGPS = true; 
+        } 
+        if (pieces[0] == "saveGPSoff") { 
+            saveGPS = false; 
+        } 
+        if (pieces.Count() < 2) continue; 
+        if (pieces[0] == "cameraName") { 
+            tempint = de.IndexOf(' ') + 1; 
+            if (tempint < de.Length) { 
+                cameraName = de.Remove(0, tempint); 
+            } 
+        } 
+        if (pieces[0] == "laserLCDName") { 
+            tempint = de.IndexOf(' ') + 1; 
+            if (tempint < de.Length) { 
+                laserStatusLCDName = de.Remove(0, tempint); 
+            } 
+        } 
+        if (pieces[0] == "gpsLCDName") { 
+            tempint = de.IndexOf(' ') + 1; 
+            if (tempint < de.Length) { 
+                gpsLCDName = de.Remove(0, tempint); 
+            } 
+        } 
+    } 
+} 
+ 
+void BuildLists() { 
+    cameras.Clear(); 
+    GridTerminalSystem.SearchBlocksOfName(cameraName, null, b => { 
+        if (b is IMyCameraBlock) cameras.Add(b as IMyCameraBlock); 
+        return false; 
+    }); 
+    laserStatusLCD.LCDBuild(laserStatusLCDName); 
+    gpsLCD.LCDBuild(gpsLCDName); 
+} 
+ 
+MyShipVelocities FindVelocity() { 
+    var shipControl = new List<IMyShipController>(); 
+    GridTerminalSystem.GetBlocksOfType(shipControl); 
+    if (shipControl.Count < 1) { return new MyShipVelocities(); } 
+    return shipControl[0].GetShipVelocities(); 
+} 
+ 
+double LidarRange(List<IMyCameraBlock> cameras, float pitch, float yaw) { 
+    double range = 99999; 
+    double range2 = 99999; 
+    MyDetectedEntityInfo info; 
+    for (int i = 0; i < cameras.Count; ++i) { 
+        if (cameras[i].EnableRaycast) { 
+            info = cameras[i].Raycast(cameras[i].AvailableScanRange, pitch, yaw); 
+            if (info.HitPosition.HasValue) { 
+                range2 = Vector3D.Distance(cameras[i].GetPosition(), info.HitPosition.Value); 
+            } 
+            if (range2 < range) range = range2; 
+        } 
+    } 
+    return range; 
+} 
+ 
+double VelocityEta(MyShipVelocities shipV, Vector3D toObject) { 
+    Vector3D rate2 = VectorProjection(shipV.LinearVelocity, toObject); 
+    int sign = Math.Sign(toObject.Dot(shipV.LinearVelocity)); 
+    return sign * rate2.Length(); 
+} 
+ 
+Vector3D VectorProjection(Vector3D a, Vector3D b) {//project a onto b  
+    Vector3D projection = a.Dot(b) / b.LengthSquared() * b; 
+    return projection; 
+} 
+ 
+public class WriteLCD { 
+    public WriteLCD(MyGridProgram script) { 
+        _script = script; 
+        lcd1 = new StringBuilder(); 
+        lcds = new List<IMyTextPanel>(); 
+    } 
+    public WriteLCD(MyGridProgram script, string lcdName) { 
+        _script = script; 
+        lcd1 = new StringBuilder(); 
+        lcds = new List<IMyTextPanel>(); 
+        LCDBuild(lcdName); 
+    } 
+ 
+    MyGridProgram _script; 
+    StringBuilder lcd1; 
+    List<IMyTextPanel> lcds; 
+    private const int MAX_NUMBER_CHARACTERS = 100000; 
+ 
+    public bool CleanLCD() { 
+        return WriteToLCD(lcds, "", Color.White, false); 
+    } 
+ 
+    public bool FlushToLCD() { 
+        if (!WriteToLCD(lcds, lcd1.ToString(), Color.White, true)) return false; 
+        lcd1.Clear(); 
+        return true; 
+    } 
+ 
+    public bool FlushToLCD(Color color) { 
+        if (!WriteToLCD(lcds, lcd1.ToString(), color, true)) return false; 
+        lcd1.Clear(); 
+        return true; 
+    } 
+ 
+    public void LCDBuild(string lcdName) { 
+        lcds.Clear(); 
+        _script.GridTerminalSystem.SearchBlocksOfName(lcdName, null, b => { 
+            if (b is IMyTextPanel) lcds.Add((IMyTextPanel)b); 
+            return false; 
+        }); 
+    } 
+ 
+    public void WriteToLCD(string textToWrite) { 
+        lcd1.Append(textToWrite); 
+    } 
+ 
+    public void WriteToLCD(string textToWrite, Color color, bool append = true) { 
+        WriteToLCD(lcds, textToWrite, color, append); 
+    } 
+ 
+    public bool WriteToLCD(List<IMyTextPanel> LCDs, string textToWrite, Color color, bool append = true) { 
+        if (textToWrite.Length >= MAX_NUMBER_CHARACTERS) textToWrite = " ERROR/n Attempted to write/n too many characters"; 
+        for (int i = 0; i < LCDs.Count; ++i) { 
+            if (!LCDs[i].IsFunctional) return false; 
+            LCDs[i].WritePublicText(textToWrite, append); 
+            LCDs[i].SetValue("FontColor", color); 
+            LCDs[i].ShowTextureOnScreen(); 
+            LCDs[i].ShowPublicTextOnScreen(); 
+        }//for 
+        return true; 
+    } 
+ 
+    public void WritetoLCDTitle(string textToWrite, Color color, bool append = true) { 
+        WriteToLCDTitle(lcds, textToWrite, color, append); 
+    } 
+ 
+    public bool WriteToLCDTitle(List<IMyTextPanel> LCDs, string textToWrite, Color color, bool append) { 
+        for (int i = 0; i < LCDs.Count; ++i) { 
+            if (!LCDs[i].IsFunctional) return false; 
+            LCDs[i].WritePublicTitle(textToWrite, append); 
+            LCDs[i].SetValue("FontColor", color); 
+            LCDs[i].ShowTextureOnScreen(); 
+            LCDs[i].ShowPublicTextOnScreen(); 
+        }//for 
+        return true; 
+    } 
+} 
+ 
+ 
+//Whip's Profiler Graph Code 
+int count = 1; 
+int maxSeconds = 60; 
+StringBuilder profile = new StringBuilder(); 
+void ProfilerGraph() { 
+    if (count <= maxSeconds * 1) { 
+        double timeToRunCode = Runtime.LastRunTimeMs; 
+ 
+        profile.Append(timeToRunCode.ToString()).Append("\n"); 
+        count++; 
+    } else { 
+        var screen = GridTerminalSystem.GetBlockWithName("DEBUG") as IMyTextPanel; 
+        screen?.WritePublicText(profile.ToString()); 
+        screen?.ShowPublicTextOnScreen(); 
+    } 
+} 
